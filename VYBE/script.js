@@ -36,6 +36,7 @@
     connectMode: 'create',   // which tab is open on the Connect screen
     pendingRoom: null,       // room of the connection being set up
     pendingPeer: null,       // peer hint from the pasted code
+    answerSubmitting: false,  // prevents paste + button events from racing
     reconnectRoom: null,     // set when reconnecting to a saved room
     duplicatesBlocked: 0,
     rejectedPackets: 0,
@@ -310,6 +311,7 @@
     $('btnGenerateOffer').disabled = false;
     $('btnGenerateAnswer').disabled = false;
     $('btnConnect').disabled = false;
+    state.answerSubmitting = false;
     const rr = state.reconnectRoom;
     $('roomNameInput').value = rr ? rr.name : '';
     $('roomNameInput').disabled = !!rr;
@@ -433,6 +435,11 @@
       showError('connectError', 'Create an invite first.');
       return;
     }
+    // A reply can trigger this handler from both a paste event and the
+    // Paste/Connect button. Once accepted, the same offer must never be
+    // submitted again. Treat repeated calls as harmless no-ops.
+    if (state.answerSubmitting || state.conn.state === 'connecting' || state.conn.state === 'connected') return;
+    if (state.conn.pc && state.conn.pc.signalingState !== 'have-local-offer') return;
     const decoded = VybeRTC.decodeCode($('answerInput').value, 'answer');
     if (!decoded.ok) { showError('connectError', decoded.error); return; }
 
@@ -446,13 +453,15 @@
     if (isMyself(peer)) { showError('connectError', 'This reply was created in this same browser. Use a different device or browser.'); return; }
 
     $('btnConnect').disabled = true;
+    state.answerSubmitting = true;
     try {
       state.pendingPeer = peer;
       await state.conn.acceptAnswer(decoded.sdp);
     } catch (err) {
+      state.answerSubmitting = false;
+      $('btnConnect').disabled = false;
       showError('connectError', err.message || 'Could not use this reply.');
     }
-    $('btnConnect').disabled = false;
   }
 
   // Someone opened an invite link (or scanned its QR): join without extra clicks.
