@@ -1,125 +1,187 @@
-# VYBE - Peer-to-Peer Study Room
+# VYBE — Peer-to-Peer Study Room
 
-## Developer
+> **Your Space. Your People. Your VYBE.**
 
-- **Name:** Karuna Chawla
-- **SAP ID:** 590027865
-- **GitHub:** [karunachawla000](https://github.com/karunachawla000)
+| | |
+|---|---|
+| **Project** | VYBE |
+| **Developer** | Karuna Chawla (individual project) |
+| **SAP ID** | 590027865 |
+| **GitHub** | [karunachawla000](https://github.com/karunachawla000) |
+| **Live app** | https://karunachawla000.github.io/VYBE/VYBE/ |
+| **Course** | B.Tech CSE, UPES — Decentralised (P2P) Web Application assignment |
 
-## Live App
+## What the app does
 
-https://karunachawla000.github.io/VYBE/VYBE/
+VYBE lets two students chat directly, browser to browser, using WebRTC (`RTCPeerConnection` and `RTCDataChannel`).
+**No server stores or forwards messages and there is no database.** There is also no signalling server: the two
+students pass a short **invite** (link / QR) and a short **reply** (code / QR) to each other by hand. When the
+DataChannel opens, all messages travel directly between the two devices. Chats are saved only in each person's own browser (LocalStorage).
 
-## What is VYBE?
+## How to use it
 
-VYBE is a study-room chat application. Two students connect directly in their browsers using WebRTC and exchange messages without a chat server or database.
+1. **Student A** opens the live app → *Start Studying* → *Create Study Room* → type a room name → *Create invite*.
+2. A shows the QR to B or sends the link (WhatsApp, e-mail, …).
+3. **Student B** (another device) scans the QR with the phone camera or taps the link. VYBE opens and creates the **reply** by itself.
+4. B sends the reply code back to A (Copy / Share), or A scans it with *Scan QR* where the browser supports it.
+5. A pastes the reply. It connects by itself. Both screens open the room when the channel is really open.
+6. Chat. Your history is saved on your device. To reconnect later press *Reconnect*: one person creates a **new** invite, the other joins with it.
 
-## How to use
-
-1. Open the live app on two devices.
-2. On the first device, enter a name and create a study room.
-3. Share the invite link or QR code.
-4. The second device opens the invite and creates a reply code.
-5. Send the reply code back to the first device.
-6. Paste the reply code and connect.
-7. Chat after the status says **Connected**.
-
-The invite and reply are manual WebRTC signalling. After connection, messages travel directly between the browsers.
+Each invite and reply works **once**. If a connection fails, create a new invite.
 
 ## Technologies and services
 
-- HTML5, CSS3 and Vanilla JavaScript
-- WebRTC: `RTCPeerConnection` and `RTCDataChannel`
-- Browser LocalStorage
-- Google public STUN server for network discovery
-- Bundled QR code JavaScript library
-- GitHub Pages for hosting
-
-No backend or database is used for chat messages.
+- HTML5, CSS3, vanilla JavaScript (no framework, no build step, no npm for the app). WebRTC, LocalStorage, GitHub Pages.
+- **Google public STUN servers** (`stun.l.google.com:19302`, `stun1…`): only to learn each device's public address. No chat data goes through them.
+- **TURN relay (optional, not included):** supported, but needs *your own* credentials in `js/ice-config.js` (see below).
+- **QR generator:** bundled *QRCode for JavaScript* by Kazuhiko Arase (MIT). "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
+- **Google Fonts** (Bricolage Grotesque, DM Sans), cosmetic only.
+- Playwright (and `node-turn`, test-only) are used only for the optional automated tests.
 
 ## Assignment problems solved
 
-### Data lost after refresh
+| # | Problem | How it is solved | Code |
+|---|---|---|---|
+| 2 | Data lost on refresh | Every message is saved in LocalStorage and re-validated on load. History survives a refresh and shows offline from the dashboard. | `chat.js` `openRoom`, `saveCurrent` |
+| 4 | Duplicate messages | Each message has a unique ID; a `Set` check drops repeats (live and during history sync). | `chat.js` `insert` |
+| 3 | Wrong message order | A logical clock (`seq = max(seen) + 1`) plus tie-breakers (timestamp, sender ID, message ID) gives the same order on both devices. | `chat.js` `compareMessages` |
+| 9 | Malicious input | Packets are size-limited, JSON-checked, type-checked and field-validated; extra fields are dropped; spoofed senders are rejected; text is drawn with `textContent`, never `innerHTML`. | `chat.js` `parsePacket`, `script.js` `renderMessages` |
+| 1 (bonus) | Late joiners see no history | On connect each side requests the other's saved history; it arrives in batches of 20 and is merged by ID. | `script.js` `sendHistory`, `chat.js` `mergeMessages` |
 
-Messages are saved in LocalStorage and loaded again when the room is opened.
+Not solved: group rooms, identity verification, deleting data on both sides (see Limitations).
 
-### Duplicate messages
+## Development challenges
 
-Every message has a unique ID. Messages with an ID already received are ignored.
+These are problems that were found and fixed while hardening the project for submission. Each was reproduced by a test or inspection first.
 
-### Messages shown in the wrong order
+### 1. Host stayed on "Connecting…" after the room opened
+- **Problem:** On the host, the room screen opened but the status pill said *Connecting…* and the peer line said *Not connected*. The original end-to-end test failed on this when re-run.
+- **Why:** `acceptAnswer()` set the state to *connecting* only after `setRemoteDescription` finished. On a fast link the DataChannel was already open by then, so *Connected* was overwritten by *Connecting*.
+- **What was tried:** Printed both pages' state after connecting (host wrong, guest right), then traced the order of events in `webrtc.js`.
+- **Solution:** Once the channel has opened, setup states can never come back (`_setState` guard), and `acceptAnswer` no longer re-enters *connecting* after open. A test watches the page and fails if "Connected" ever shows before the channel is open.
 
-Messages use sequence numbers and deterministic sorting instead of depending only on device time.
+### 2. TURN (relay) addresses were silently thrown away
+- **Problem:** The compact code kept only the 5 highest-priority UDP candidates. With a TURN server, the relay candidate would have been cut, so the relay would never be used. TCP candidates were never kept either.
+- **Why:** Relay candidates always have the *lowest* priority, so a "best 5" cut removes them first.
+- **What was tried:** A unit test with 12 candidates (6 local, 4 public, 2 relay) reproduced the loss. Then a quota per kind was tried, and finally verified with a real relay.
+- **Solution:** Candidates are chosen per kind (2 relay, 2 public, 3 local, 2 TCP, at most 8). Relay candidates now survive; a local TURN test (`tests/e2e-turn-relay.js`) connected two browsers using *only* the relay, and the code stayed about 283 characters.
 
-### Malicious input
+### 3. Paste, Paste button, Connect and QR scan could start duplicate connections
+- **Problem:** Pasting a reply fires the paste handler, the Paste button and the Connect button almost together, so the same reply or invite could be applied more than once or create extra connections.
+- **Why:** The guards ran after the first `await`, so several calls passed them before any finished.
+- **What was tried:** A test fires 3 paste events + 3 clicks + the Paste button at once and counts `RTCPeerConnection` objects and how many times the answer is applied.
+- **Solution:** A small state machine (`idle → checking → used`) set *before* the first `await`, plus one-use flags inside `Connection`. The result: one connection, one answer applied, the reply box locks, and buttons show *Preparing…* / *Connecting…*.
 
-Incoming packets are validated, message length is limited, and chat text is displayed with `textContent` so HTML and scripts do not run.
+### 4. Invite links could point to localhost, `file://` or a page with `index.html`
+- **Problem:** An invite made while testing locally contained a link nobody else can open.
+- **Why:** The link was built from the current page address.
+- **What was tried:** Checked invites from the public address, from `localhost` and from `file://`.
+- **Solution:** On the public site the link uses that page (normalised, no `index.html`). On localhost/LAN/`file://` it uses the public address from `<meta name="vybe-public-url">`. If none is set, it shows a clear warning (localhost) or refuses (`file://`).
 
-### Late joiners missing history
+### 5. The invite QR code would not decode in one decoder
+- **Problem:** The invite QR failed to decode in an independent OpenCV decoder while the reply QR worked.
+- **Why:** The canvas was drawn at 324 px but stretched by CSS to 300 px. That uneven scaling blurs the QR modules.
+- **What was tried:** Decoded the same image at other scales and with OpenCV's second detector. Both read the exact link, proving the QR data was right and the problem was the blur.
+- **Solution:** The QR is drawn at a size that fits the screen and shown at its real pixel size. Tests decode both QR codes back to the exact text.
 
-When a peer connects, saved messages are exchanged through the WebRTC DataChannel and merged without duplicates.
+### 6. Closing the connection when a phone only hides the page (found by code review, not tested on a phone)
+- **Problem:** `pagehide` closed the connection every time.
+- **Why:** On mobile browsers `pagehide` also fires when a page is only kept in the back/forward cache.
+- **What was tried:** Read the browser event rules; no phone test was possible here.
+- **Solution:** The connection is closed only when `event.persisted` is false. **This still needs a real phone test.**
 
-## Development challenges and solutions
+## Screenshots
 
-### Challenge 1: Invite code was too long
+| Landing | Connect + reply | Dashboard |
+|---|---|---|
+| ![Landing](screenshots/00-landing.png) | ![Reply](screenshots/01b-join-reply.png) | ![Dashboard](screenshots/02-dashboard.png) |
 
-- **Problem:** A complete WebRTC description is difficult to share in a QR code.
-- **Why:** SDP contains more information than this data-only app needs.
-- **Solution:** The app keeps only the required ICE, fingerprint and candidate information and rebuilds the SDP.
+| Room (guest) | Room (host) |
+|---|---|
+| ![Room](screenshots/03-study-room-desktop.png) | ![Host](screenshots/04-study-room-host.png) |
 
-### Challenge 2: ICE candidates were missing
+| Mobile landing | Mobile dashboard | Mobile room |
+|---|---|---|
+| ![Mobile landing](screenshots/05-landing-mobile.png) | ![Mobile dashboard](screenshots/06-dashboard-mobile.png) | ![Mobile room](screenshots/07-study-room-mobile.png) |
 
-- **Problem:** Some invites could not connect.
-- **Why:** WebRTC collects network candidates after the offer is created.
-- **Solution:** The app waits for ICE gathering before showing the invite.
-
-### Challenge 3: Connection status was confusing
-
-- **Problem:** A browser could report a connection before chat was usable.
-- **Why:** WebRTC connection state and DataChannel state are different.
-- **Solution:** VYBE shows Connected only after the DataChannel `onopen` event.
-
-### Challenge 4: Duplicate and unsorted history
-
-- **Problem:** Reconnecting could add the same message again and show different orders.
-- **Why:** Both peers can send history and their clocks can differ.
-- **Solution:** Unique IDs remove duplicates, while sequence numbers provide stable ordering.
-
-### Challenge 5: Different networks may block WebRTC
-
-- **Problem:** Direct connections can fail on strict Wi-Fi or mobile networks.
-- **Why:** Firewalls and NAT can block peer-to-peer traffic.
-- **Solution:** VYBE uses STUN and shows a clear failure message. A TURN relay is a future improvement.
-
-## Project files
-
-- `index.html` - page structure
-- `style.css` - layout and responsive design
-- `script.js` - user interface and navigation
-- `js/webrtc.js` - WebRTC connection and signalling codes
-- `js/chat.js` - messages, storage, validation and history sync
-- `js/qrcode.js` - QR code generation
+Connect screen before a reply: `screenshots/01-connect.png`.
 
 ## Testing
 
-- Tested on two devices using a real WebRTC DataChannel.
-- Tested invite and reply codes, chat in both directions, refresh persistence, history sync, duplicate prevention and unsafe text input.
-- Tested the live GitHub Pages URL.
+Run in headless Chromium on one computer, using two separate browser profiles. The app was served at the exact address `https://karunachawla000.github.io/VYBE/VYBE/` (requests answered from local files).
+
+| Test | Command | Result |
+|---|---|---|
+| Syntax check of every `.js` file | `node --check <file>` | passed |
+| Unit tests: validation, duplicates, ordering, persistence, history batches, compact code, relay/TCP candidate selection, hostile codes, ICE config | `node tests/chat.test.js` | **84 / 84 passed** |
+| End-to-end, two browser profiles | `node tests/e2e-two-peers.js` | **100 / 100 passed** |
+| Relay test with a *local* TURN server (relay-only) | `node tests/e2e-turn-relay.js` | **12 / 12 passed** |
+
+What the end-to-end test covers: GitHub Pages path and assets; invite and reply generation; QR codes decode back to the exact text; duplicate paste/click on both sides; "Connected" only after the channel opens; chat both ways; HTML shown as text; invalid, oversized and spoofed packets rejected; refresh keeps history; reconnect with a new pair and history sync; a stale reply ends in a clear *Failed* state; invites made locally use the public URL; layouts at 320, 360, 390, 768 and 1366 px.
+
+### Not tested (do these yourself before claiming them)
+
+| Test | Result |
+|---|---|
+| Two real devices on **different networks** (e.g. Wi-Fi + mobile data) on the live URL | ☐ not tested |
+| Real phone camera scanning the invite QR (Android, iPhone) | ☐ not tested (decoded by software only) |
+| In-app *Scan QR* button, *Share…* button, Copy/Paste buttons on a phone | ☐ not tested |
+| Safari and Firefox (only Chromium was used) | ☐ not tested |
+| A real TURN provider (the relay test used a local test server) | ☐ not tested; no credentials are included |
+| Campus Wi-Fi, phone sleep / Wi-Fi drop on a real device | ☐ not tested |
+
+**Remote connection is not guaranteed.** It has not been shown to work across different networks.
 
 ## Limitations
 
-- The app supports two users per room.
-- A new invite and reply are needed for a new connection.
-- Some restrictive networks may require a TURN relay.
-- Chat history is stored only on each user's own device.
+- **No TURN credentials are included.** Without a relay, devices behind strict NATs or firewalls (some campus/office Wi-Fi, some mobile data) may fail to connect. Try the same Wi-Fi or a phone hotspot.
+- **Browser-side TURN credentials are public.** This is a static site, so anyone can read `js/ice-config.js` and use your relay and data allowance. There is no safe place for a secret on GitHub Pages. Use a limited TURN username/credential from a provider with a usage cap, never an account API key, and change it after grading. Messages stay end-to-end encrypted (DTLS) on a relay.
+- Two people per room. A reply must travel back to the host (scan or paste); one-scan connection needs a signalling server. iPhone Safari has no in-app QR scanner, so use Copy/Paste there.
+- Invites contain network addresses (including your public IP). Share them only with people you trust.
+- History sync works only while a peer holding the messages is online. "Clear my chat" deletes only your copy; a peer can send theirs back.
+- No identity verification (anyone can type any name). LocalStorage is limited (~5 MB, latest 1000 messages per room) and is lost if site data is cleared.
+- Text only.
 
-## Running locally
+### Adding your TURN server
 
-From the folder containing `index.html`, run:
+1. Get TURN URLs, username and credential from a TURN provider (some have a free tier) or your own coturn server.
+2. Open `js/ice-config.js`. In the `turn` list, delete the two lines marked `DELETE THIS WHOLE LINE`, then replace every `YOUR_...` value. Entries that still contain `YOUR_` are ignored on purpose.
+3. Commit and push, then hard-refresh (Ctrl+Shift+R) on both devices. The *Connection info → Route* line says *Through a relay server (TURN)* when it is used.
+4. To prove the relay works, temporarily set `forceRelay: true`, connect two devices, then set it back to `false`.
+
+## Run locally
 
 ```bash
-python -m http.server 8080
+cd VYBE
+python3 -m http.server 8080      # then open http://localhost:8080
 ```
 
-Then open `http://localhost:8080/`.
+`file://` does not work (WebRTC/clipboard need `http://localhost` or `https://`). Invites made locally point to the public GitHub Pages address, so the friend's device must open the **deployed** version. For a purely local test, open two different browser profiles (or one normal and one private window), and temporarily set `vybe-public-url` in `index.html` to empty.
 
+Run the tests (needs Node 18+):
+
+```bash
+npm i -D playwright node-turn && npx playwright install chromium
+node tests/chat.test.js
+python3 -m http.server 8080 &    # needed once for the "running locally" check
+node tests/e2e-two-peers.js
+node tests/e2e-turn-relay.js
+```
+
+## Project structure
+
+```
+VYBE/
+├── index.html        all pages (landing, dashboard, connect, room, about)
+├── style.css         design and responsive layout
+├── script.js         UI logic and event wiring
+├── js/ice-config.js  STUN + optional TURN settings (the only file with TURN details)
+├── js/webrtc.js      connection, compact codes, validation (no DOM)
+├── js/chat.js        messages, storage, validation, ordering (no DOM)
+├── js/qrcode.js      bundled QR generator (MIT)
+├── assets/logo.svg
+├── tests/            chat.test.js, e2e-two-peers.js, e2e-turn-relay.js
+├── screenshots/
+├── VIVA_GUIDE.md
+└── README.md
+```

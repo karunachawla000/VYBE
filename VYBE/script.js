@@ -36,8 +36,11 @@
     connectMode: 'create',   // which tab is open on the Connect screen
     pendingRoom: null,       // room of the connection being set up
     pendingPeer: null,       // peer hint from the pasted code
-    answerSubmitting: false,  // prevents paste + button events from racing
     reconnectRoom: null,     // set when reconnecting to a saved room
+    answerState: 'idle',     // host's reply box: 'idle' | 'checking' | 'used'  (a reply is used only once)
+    joinState: 'idle',       // guest's invite box: 'idle' | 'busy' | 'ready'
+    joinedOffer: null,       // the invite code the guest already turned into a reply
+    creatingOffer: false,    // host is busy creating an invite
     duplicatesBlocked: 0,
     rejectedPackets: 0,
     syncText: '-',
@@ -153,11 +156,11 @@
 
   const STATUS_DEFAULT_TEXT = {
     'idle': '',
-    'gathering': 'Collecting your network addresses. This can take a few seconds...',
+    'gathering': 'Getting ready. Finding the best way to reach your friend. This can take a few seconds...',
     'waiting-for-answer': 'Invite ready. Share the QR or link, then scan or paste your friend\'s reply below.',
     'waiting-for-host': 'Reply ready. Send it back to your friend. This page opens the room by itself.',
-    'connecting': 'Trying to open a direct channel to your peer...',
-    'connected': 'Direct DataChannel is open.',
+    'connecting': 'Reply accepted. Opening a secure channel to your friend. This can take up to 30 seconds...',
+    'connected': 'Connected. Messages go straight to your friend\'s device.',
     'disconnected': 'The connection is closed.',
     'failed': 'The connection failed.'
   };
@@ -308,10 +311,13 @@
     $('answerInput').value = '';
     $('offerInput').value = '';
     $('answerCode').value = '';
-    $('btnGenerateOffer').disabled = false;
-    $('btnGenerateAnswer').disabled = false;
-    $('btnConnect').disabled = false;
-    state.answerSubmitting = false;
+    state.answerState = 'idle';
+    state.joinState = 'idle';
+    state.joinedOffer = null;
+    state.creatingOffer = false;
+    setAnswerFormLocked(false);
+    setButtonBusy($('btnGenerateOffer'), false, 'Create invite');
+    setButtonBusy($('btnGenerateAnswer'), false, 'Join');
     const rr = state.reconnectRoom;
     $('roomNameInput').value = rr ? rr.name : '';
     $('roomNameInput').disabled = !!rr;
@@ -351,25 +357,73 @@
 
   function isMyself(peer) { return peer.short === state.user.id.slice(0, 8); }
 
+  // Is this host name only reachable from this computer / this network?
+  function isLocalHostName(host) {
+    return /^(localhost|127\.|0\.0\.0\.0|\[?::1\]?$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/i.test(host) ||
+      /\.(local|localhost|lan|internal)$/i.test(host);
+  }
+
+  // Normalise an app URL: https URL, no search, no hash, ends with "/" (never "index.html").
+  function normaliseAppUrl(url) {
+    url.search = '';
+    url.hash = '';
+    url.pathname = url.pathname.replace(/\/[^\/]*\.[A-Za-z0-9]+$/, '/');   // drop index.html etc.
+    if (!url.pathname.endsWith('/')) url.pathname += '/';
+    return url;
+  }
+
   // Build the invite link that carries the offer code.
+  //   * On the public site (GitHub Pages) the link points at the page you are on.
+  //   * On localhost / a LAN address / file:// the link would be useless to a friend on
+  //     another network, so it points at the public URL from <meta name="vybe-public-url">.
+  // Returns { link, usesPublicSite, localOnly }.
   function makeInviteLink(code) {
     const configured = document.querySelector('meta[name="vybe-public-url"]');
     const configuredUrl = configured && configured.content.trim();
-    const base = configuredUrl || (location.origin !== 'null' ? location.href : '');
-    if (!base) throw new Error('This page was opened directly from a file. Open VYBE from its GitHub Pages URL (or a local HTTP server) before creating an invite.');
-    let url;
-    try { url = new URL(base, location.href); }
-    catch (err) { throw new Error('The configured VYBE public URL is invalid. Check the vybe-public-url setting.'); }
-    if (!/^https?:$/.test(url.protocol)) throw new Error('The invite needs an http:// or https:// app URL. Deploy VYBE to GitHub Pages, then create a new invite.');
-    url.search = '';
-    url.hash = '';
-    if (!url.pathname.endsWith('/')) url.pathname += '/';
+    const isFile = location.protocol === 'file:' || location.origin === 'null';
+    const localPage = isFile || isLocalHostName(location.hostname);
+
+    let url = null, usesPublicSite = false, localOnly = false;
+    if (!localPage) {
+      url = new URL(location.href);                       // we ARE on the public site
+    } else if (configuredUrl) {
+      try { url = new URL(configuredUrl); }
+      catch (err) { throw new Error('The public VYBE address in index.html (vybe-public-url) is not a valid link.'); }
+      usesPublicSite = true;
+    } else if (!isFile) {
+      url = new URL(location.href);                       // local dev, nothing configured: warn the user
+      localOnly = true;
+    } else {
+      throw new Error('This page was opened from a file on your computer. Open VYBE from its GitHub Pages address, then create the invite.');
+    }
+    if (!/^https?:$/.test(url.protocol)) {
+      throw new Error('The invite needs a web address (https://). Open VYBE from its GitHub Pages address, then create the invite.');
+    }
+    normaliseAppUrl(url);
     url.hash = '/join/' + code;
-    return url.toString();
+    return { link: url.toString(), usesPublicSite: usesPublicSite, localOnly: localOnly };
   }
 
+  // Disable a button and show a "working" label; restore it afterwards.
+  function setButtonBusy(button, busy, label) {
+    button.disabled = !!busy;
+    button.textContent = label;
+    button.setAttribute('aria-busy', String(!!busy));
+  }
+
+  // Lock / unlock the host's "paste the reply" controls.
+  function setAnswerFormLocked(locked, label) {
+    $('answerInput').readOnly = !!locked;
+    $('btnPasteAnswer').disabled = !!locked;
+    $('btnScanAnswer').disabled = !!locked;
+    setButtonBusy($('btnConnect'), locked, label || 'Connect');
+  }
+
+  // Draw the QR at a size that fits the screen and is shown at its real pixel size
+  // (a stretched QR gets blurry edges, which makes scanning harder).
   function drawQr(canvasId, text) {
-    try { VybeQR.draw($(canvasId), text, 240); }
+    const size = Math.max(200, Math.min(340, window.innerWidth - 100));
+    try { VybeQR.draw($(canvasId), text, size); }
     catch (err) { console.warn('[VYBE] QR failed:', err.message); }
   }
 
@@ -397,70 +451,105 @@
   /* ---- CREATE: step 1, generate the offer ---- */
   async function onGenerateOffer(event) {
     event.preventDefault();
+    if (state.creatingOffer) return;                       // ignore double clicks / double Enter
     showError('createError', '');
     const name = state.reconnectRoom ? state.reconnectRoom.name : VybeChat.cleanRoomName($('roomNameInput').value);
     if (!name) { showError('createError', 'Please give your room a name first.'); $('roomNameInput').focus(); return; }
 
     const room = state.reconnectRoom || { id: VybeChat.generateId().replace(/-/g, '').slice(0, 12), name: name };
-    const conn = newConnection();
+    state.creatingOffer = true;
+    let hasInvite = !$('offerBox').hidden;
+    setButtonBusy($('btnGenerateOffer'), true, 'Preparing...');
+
+    const conn = newConnection();                          // closes any older invite first
     state.pendingRoom = room;
-    $('btnGenerateOffer').disabled = true;
     $('offerBox').hidden = true;
     $('answerPasteBox').hidden = true;
+    // A new invite starts a fresh invite/reply pair: forget the old reply.
+    showError('connectError', '');
+    $('answerInput').value = '';
+    state.answerState = 'idle';
+    setAnswerFormLocked(false);
 
     try {
       const result = await conn.createOffer();
+      if (state.conn !== conn) return;                     // user left / started over meanwhile
       const code = VybeRTC.encodeCode('offer', result.sdp, room, { id: state.user.id, name: state.user.name });
-      const link = makeInviteLink(code);
-      $('offerCode').value = link;
-      drawQr('offerQr', link);
-      setupShare('btnShareOffer', function () { return 'Join my VYBE study room "' + room.name + '": ' + link; }, 'VYBE study room');
-      $('offerMeta').textContent = result.iceComplete ? '' : 'Some network addresses were still being collected. If the connection fails, create a new invite.';
+      const invite = makeInviteLink(code);
+      $('offerCode').value = invite.link;
+      drawQr('offerQr', invite.link);
+      setupShare('btnShareOffer', function () { return 'Join my VYBE study room "' + room.name + '": ' + invite.link; }, 'VYBE study room');
+      $('offerMeta').textContent = inviteNote(result, invite);
       $('offerBox').hidden = false;
       $('answerPasteBox').hidden = false;
-      $('btnGenerateOffer').textContent = 'Create new invite';
+      hasInvite = true;
     } catch (err) {
       conn.close();
-      state.conn = null;
+      if (state.conn === conn) state.conn = null;
       showError('createError', err.message || 'Could not create the invite.');
       setStatus('failed', err.message || 'Could not create the invite.');
+    } finally {
+      state.creatingOffer = false;
+      setButtonBusy($('btnGenerateOffer'), false, hasInvite ? 'Create new invite' : 'Create invite');
     }
-    $('btnGenerateOffer').disabled = false;
   }
 
-  /* ---- CREATE: step 3, paste the answer and connect ---- */
+  // One short, plain-language note under the invite.
+  function inviteNote(result, invite) {
+    const notes = [];
+    if (invite.localOnly) notes.push('Warning: VYBE is running locally, so this link only works on this computer or network. Open the GitHub Pages address to invite someone on another network.');
+    else if (invite.usesPublicSite) notes.push('This link opens the public VYBE site, so your friend can use it from any network.');
+    if (result.turnProblem) notes.push(result.turnProblem);
+    else if (result.turnConfigured && result.relayCount === 0) notes.push('The relay server could not be reached. The connection may fail on strict networks.');
+    else if (!result.iceComplete) notes.push('Some network details were still being collected. If the connection fails, create a new invite.');
+    return notes.join(' ');
+  }
+
+  /* ---- CREATE: step 3, paste the reply and connect ---- */
   async function onConnectClick() {
+    // A reply can be used ONCE. Paste, Paste button, Connect button and QR scan can all
+    // arrive within milliseconds of each other; only the first one gets through.
+    if (state.answerState !== 'idle') return;
     showError('connectError', '');
     if (!state.conn || state.conn.role !== 'host') {
       showError('connectError', 'Create an invite first.');
       return;
     }
-    // A reply can trigger this handler from both a paste event and the
-    // Paste/Connect button. Once accepted, the same offer must never be
-    // submitted again. Treat repeated calls as harmless no-ops.
-    if (state.answerSubmitting || state.conn.state === 'connecting' || state.conn.state === 'connected') return;
-    if (state.conn.pc && state.conn.pc.signalingState !== 'have-local-offer') return;
+    state.answerState = 'checking';
+    setAnswerFormLocked(true, 'Connecting...');
+    const release = function (message) {
+      state.answerState = 'idle';
+      setAnswerFormLocked(false);
+      if (message) showError('connectError', message);
+    };
+
     const decoded = VybeRTC.decodeCode($('answerInput').value, 'answer');
-    if (!decoded.ok) { showError('connectError', decoded.error); return; }
+    if (!decoded.ok) { release(decoded.error); return; }
 
     const roomInAnswer = VybeChat.sanitizeRoomMeta(decoded.room);
     if (!roomInAnswer || roomInAnswer.id !== state.pendingRoom.id) {
-      showError('connectError', 'This reply belongs to a different invite. Ask your friend to open your latest invite.');
+      release('This reply belongs to a different invite. Ask your friend to open your latest invite.');
       return;
     }
     const peer = sanitizePeer(decoded.from);
-    if (!peer) { showError('connectError', 'The reply has no valid sender information.'); return; }
-    if (isMyself(peer)) { showError('connectError', 'This reply was created in this same browser. Use a different device or browser.'); return; }
+    if (!peer) { release('The reply has no valid sender information.'); return; }
+    if (isMyself(peer)) { release('This reply was created in this same browser. Use a different device or browser.'); return; }
 
-    $('btnConnect').disabled = true;
-    state.answerSubmitting = true;
+    const conn = state.conn;
     try {
       state.pendingPeer = peer;
-      await state.conn.acceptAnswer(decoded.sdp);
+      await conn.acceptAnswer(decoded.sdp);
+      if (state.conn !== conn) return;
+      state.answerState = 'used';
+      setAnswerFormLocked(true, 'Reply accepted');
     } catch (err) {
-      state.answerSubmitting = false;
-      $('btnConnect').disabled = false;
-      showError('connectError', err.message || 'Could not use this reply.');
+      if (state.conn !== conn) return;
+      if (err.code === 'DUPLICATE') {                       // the same reply arrived twice: keep the first
+        state.answerState = 'used';
+        setAnswerFormLocked(true, 'Reply accepted');
+        return;
+      }
+      release(err.message || 'Could not use this reply.');
     }
   }
 
@@ -478,9 +567,20 @@
 
   /* ---- JOIN: step 1, read the invite and make the reply ---- */
   async function onGenerateAnswer() {
+    if (state.joinState === 'busy') return;                // already working on it
     showError('joinError', '');
-    const decoded = VybeRTC.decodeCode($('offerInput').value, 'offer');
+    const raw = $('offerInput').value;
+    const decoded = VybeRTC.decodeCode(raw, 'offer');
     if (!decoded.ok) { showError('joinError', decoded.error); return; }
+
+    // The very same invite was already turned into a reply: do nothing twice.
+    const codeKey = (raw.replace(/\s+/g, '').match(/VYBE3:[A-Za-z0-9_-]+/) || [''])[0];
+    if (state.joinState === 'ready' && state.joinedOffer === codeKey &&
+        state.conn && state.conn.state !== 'failed' && state.conn.state !== 'disconnected') {
+      toast('Your reply for this invite is already ready below.');
+      $('answerBox').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
 
     const roomInOffer = VybeChat.sanitizeRoomMeta(decoded.room);
     if (!roomInOffer) { showError('joinError', 'The invite has no valid room information.'); return; }
@@ -495,27 +595,34 @@
     const saved = VybeChat.getRoom(roomInOffer.id);
     const room = saved ? { id: saved.id, name: saved.name } : roomInOffer;
 
+    state.joinState = 'busy';
+    setButtonBusy($('btnGenerateAnswer'), true, 'Preparing...');
+    $('answerBox').hidden = true;
     const conn = newConnection();
     state.pendingRoom = room;
     state.pendingPeer = peer;
-    $('btnGenerateAnswer').disabled = true;
-    $('answerBox').hidden = true;
 
     try {
       const result = await conn.acceptOffer(decoded.sdp);
+      if (state.conn !== conn) return;
       const replyCode = VybeRTC.encodeCode('answer', result.sdp, room, { id: state.user.id, name: state.user.name });
       $('answerCode').value = replyCode;
       drawQr('answerQr', replyCode);
       setupShare('btnShareAnswer', function () { return replyCode; }, 'VYBE reply');
       $('answerBox').hidden = false;
       $('answerBox').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      state.joinState = 'ready';
+      state.joinedOffer = codeKey;
     } catch (err) {
       conn.close();
-      state.conn = null;
+      if (state.conn === conn) state.conn = null;
+      state.joinState = 'idle';
       showError('joinError', err.message || 'Could not create the reply.');
       setStatus('failed', err.message || 'Could not create the reply.');
+    } finally {
+      if (state.joinState === 'busy') state.joinState = 'idle';
+      setButtonBusy($('btnGenerateAnswer'), false, 'Join');
     }
-    $('btnGenerateAnswer').disabled = false;
   }
 
   /* ---------------------------------------------------------------------
@@ -524,8 +631,12 @@
   function onConnState(status, detail) {
     setStatus(status, detail);
     if (status === 'failed' || status === 'disconnected') {
-      const target = state.connectMode === 'create' ? 'connectError' : 'joinError';
-      if (!$('view-connect').hidden) showError(target, detail);
+      const hostSide = !!(state.conn && state.conn.role === 'host');
+      // An invite/reply pair works only once, so the next try needs a new pair.
+      const next = hostSide ? ' Press "Create new invite" to try again.'
+                            : ' Ask your friend to create a new invite and open it again.';
+      if (!$('view-connect').hidden) showError(hostSide ? 'connectError' : 'joinError', (detail || 'The connection failed.') + next);
+      if (hostSide && state.answerState === 'used') setAnswerFormLocked(true, 'Reply used');
     }
   }
 
@@ -555,9 +666,9 @@
     if (!state.conn || !state.conn.isOpen()) return;
     const path = await state.conn.getConnectionPath();
     if (!path) { state.path = 'Direct (details unavailable)'; }
-    else if (path.local === 'relay' || path.remote === 'relay') state.path = 'Relayed (TURN)';
+    else if (path.local === 'relay' || path.remote === 'relay') state.path = 'Through a relay server (TURN), still encrypted';
     else if (path.local === 'host' && path.remote === 'host') state.path = 'Direct, same network';
-    else state.path = 'Direct, via STUN (' + path.local + ' / ' + path.remote + ')';
+    else state.path = 'Direct over the internet';
     updateInfoPanel();
   }
 
@@ -572,6 +683,13 @@
 
     switch (packet.type) {
       case 'hello':
+        // The invite/reply carried the first 8 characters of the peer's ID. The ID in "hello"
+        // must match it, and must not change afterwards.
+        if (state.peer && ((state.peer.short && packet.senderId.slice(0, 8) !== state.peer.short) ||
+                           (state.peer.id && state.peer.id !== packet.senderId))) {
+          rejectPacket('Peer identity does not match the invite or reply.');
+          return;
+        }
         state.peer = { id: packet.senderId, short: packet.senderId.slice(0, 8), name: packet.name };
         rememberName(packet.senderId, packet.name);
         renderRoom();
@@ -703,6 +821,12 @@
     updateInfoPanel();
   }
 
+  // Friendly names for the browser's internal network-check states.
+  const NETWORK_CHECK_TEXT = {
+    'new': 'Starting', 'checking': 'Checking routes', 'connected': 'Route found',
+    'completed': 'Route confirmed', 'failed': 'No route found', 'disconnected': 'Interrupted', 'closed': 'Closed'
+  };
+
   function updateInfoPanel() {
     if (!state.room || !state.user) return;
     const info = STATUS_INFO[state.status] || STATUS_INFO.idle;
@@ -711,7 +835,7 @@
     $('infoYou').textContent = state.user.name + ' (' + shortId(state.user.id) + ')';
     $('infoPeer').textContent = state.peer ? state.peer.name + ' (' + shortId(state.peer.id || state.peer.short) + ')' : '-';
     $('infoPath').textContent = state.status === 'connected' ? (state.path || 'Checking...') : '-';
-    $('infoIce').textContent = state.conn ? state.iceState : '-';
+    $('infoIce').textContent = state.conn ? (NETWORK_CHECK_TEXT[state.iceState] || state.iceState) : '-';
     const n = VybeChat.getMessageCount();
     $('infoStored').textContent = n + ' message' + (n === 1 ? '' : 's') + ' (this browser only)';
     $('infoSync').textContent = state.syncText;
@@ -820,7 +944,7 @@
         while (scannerRunning) {
           try {
             const codes = await detector.detect(video);
-            const hit = codes.find(function (c) { return c.rawValue && c.rawValue.indexOf('VYBE2:') !== -1; });
+            const hit = codes.find(function (c) { return c.rawValue && c.rawValue.indexOf(VybeRTC.CODE_PREFIX) !== -1; });
             if (hit) { closeScanner(); onText(hit.rawValue); return; }
           } catch (err) { /* keep trying */ }
           await new Promise(function (r) { setTimeout(r, 250); });
@@ -856,19 +980,30 @@
     $('btnGenerateAnswer').addEventListener('click', onGenerateAnswer);
     $('btnCopyOffer').addEventListener('click', function () { copyText($('offerCode').value, $('offerCode'), $('btnCopyOffer')); });
     $('btnCopyAnswer').addEventListener('click', function () { copyText($('answerCode').value, $('answerCode'), $('btnCopyAnswer')); });
-    $('btnPasteAnswer').addEventListener('click', async function () { await pasteInto($('answerInput')); if ($('answerInput').value.indexOf('VYBE2:') !== -1) onConnectClick(); });
-    $('btnPasteOffer').addEventListener('click', async function () { await pasteInto($('offerInput')); if ($('offerInput').value.indexOf('VYBE2:') !== -1) onGenerateAnswer(); });
+    // Paste button, pasting into the box, Connect and Scan can all fire for the same code.
+    // onConnectClick / onGenerateAnswer ignore every call after the first one (see their guards).
+    const looksLikeCode = function (text) { return /VYBE\d:/.test(text); };
+    $('btnPasteAnswer').addEventListener('click', async function () {
+      if (state.answerState !== 'idle') return;
+      await pasteInto($('answerInput'));
+      if (looksLikeCode($('answerInput').value)) onConnectClick();
+    });
+    $('btnPasteOffer').addEventListener('click', async function () {
+      if (state.joinState === 'busy') return;
+      await pasteInto($('offerInput'));
+      if (looksLikeCode($('offerInput').value)) onGenerateAnswer();
+    });
 
     // Pasting straight into the box also continues automatically.
-    $('answerInput').addEventListener('paste', function () { setTimeout(function () { if ($('answerInput').value.indexOf('VYBE2:') !== -1) onConnectClick(); }, 50); });
-    $('offerInput').addEventListener('paste', function () { setTimeout(function () { if ($('offerInput').value.indexOf('VYBE2:') !== -1) onGenerateAnswer(); }, 50); });
+    $('answerInput').addEventListener('paste', function () { setTimeout(function () { if (looksLikeCode($('answerInput').value)) onConnectClick(); }, 50); });
+    $('offerInput').addEventListener('paste', function () { setTimeout(function () { if (looksLikeCode($('offerInput').value)) onGenerateAnswer(); }, 50); });
 
     // Scan buttons exist only where the browser can read QR codes.
     const canScan = scannerSupported();
     $('btnScanAnswer').hidden = !canScan;
     $('btnScanOffer').hidden = !canScan;
-    $('btnScanAnswer').addEventListener('click', function () { openScanner(function (text) { $('answerInput').value = text; onConnectClick(); }); });
-    $('btnScanOffer').addEventListener('click', function () { openScanner(function (text) { $('offerInput').value = text; onGenerateAnswer(); }); });
+    $('btnScanAnswer').addEventListener('click', function () { if (state.answerState !== 'idle') return; openScanner(function (text) { $('answerInput').value = text; onConnectClick(); }); });
+    $('btnScanOffer').addEventListener('click', function () { if (state.joinState === 'busy') return; openScanner(function (text) { $('offerInput').value = text; onGenerateAnswer(); }); });
     $('btnScannerClose').addEventListener('click', closeScanner);
 
     $('btnStartOver').addEventListener('click', function () {
@@ -904,7 +1039,17 @@
 
     window.addEventListener('hashchange', route);
     // Tell the peer when this tab closes, so they see it at once.
-    window.addEventListener('pagehide', function () { leaveCurrentConnection(true); });
+    // (Not when the browser only keeps the page in its back/forward cache: persisted === true.)
+    window.addEventListener('pagehide', function (e) { if (!e.persisted) leaveCurrentConnection(true); });
+  }
+
+  // Honest note about networks: depends on whether a TURN relay is configured.
+  function setNetworkNotice() {
+    const el = $('networkNotice');
+    if (!el) return;
+    el.textContent = VybeRTC.hasTurn()
+      ? 'VYBE first tries a direct connection and falls back to a relay server on strict networks. Messages stay encrypted on the relay. '
+      : 'VYBE tries a direct connection. On strict networks (some campus or office Wi-Fi, some mobile data) it can fail, and no relay server is set up in this copy of VYBE. If that happens, try the same Wi-Fi or a phone hotspot. ';
   }
 
   /* ---------------------------------------------------------------------
@@ -915,6 +1060,7 @@
     loadNames();
     bindEvents();
     updateCharCount();
+    setNetworkNotice();
     setStatus('idle');
     // A refresh always starts offline. Saved chats are listed on the dashboard.
     if (location.hash === '#/room' || location.hash === '#/connect') location.hash = '#/dashboard';

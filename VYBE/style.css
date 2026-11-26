@@ -204,9 +204,9 @@ input[type="text"]:focus, textarea:focus { outline: none; border-color: var(--or
 .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .row-between { margin-bottom: 20px; }
 
-.invite { display: grid; grid-template-columns: 240px 1fr; gap: 24px; align-items: start; }
+.invite { display: grid; grid-template-columns: minmax(0, 300px) 1fr; gap: 24px; align-items: start; }
 .qr-wrap { text-align: center; }
-.qr { width: 240px; height: 240px; max-width: 100%; border: 2px solid var(--brown); border-radius: var(--radius-sm); background: #fff; image-rendering: pixelated; }
+.qr { width: auto; max-width: 100%; height: auto; border: 2px solid var(--brown); border-radius: var(--radius-sm); background: #fff; image-rendering: pixelated; }
 .invite-side .code-box { margin-bottom: 12px; }
 
 .scanner { position: fixed; inset: 0; background: rgba(67, 41, 31, 0.8); display: grid; place-items: center; z-index: 60; padding: 16px; }

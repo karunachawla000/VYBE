@@ -6,7 +6,9 @@
   <title>VYBE — Peer-to-Peer Study Room</title>
   <meta name="description" content="VYBE is a decentralised study room. Two students connect browser-to-browser with WebRTC and chat without any server storing or forwarding their messages.">
   <meta name="theme-color" content="#FFF8EF">
-  <meta name="vybe-public-url" content="">
+  <!-- Public address of this app. Invite links and QR codes made from localhost / a file point here,
+       so a friend on another network can open them. Keep the trailing slash. -->
+  <meta name="vybe-public-url" content="https://karunachawla000.github.io/VYBE/VYBE/">
   <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -201,7 +203,7 @@
           <div class="cstep" id="answerPasteBox" hidden>
             <h2><span class="step-num sm">3</span> Get your friend's reply</h2>
             <p class="small">When your friend opens the invite, their screen shows a <strong>reply</strong> (a QR and a code). Scan it or paste it here. It connects by itself.</p>
-            <textarea id="answerInput" class="code-box" rows="3" placeholder="Paste the reply code here (starts with VYBE2:)" aria-label="Reply code from your friend" spellcheck="false"></textarea>
+            <textarea id="answerInput" class="code-box" rows="3" placeholder="Paste the reply code here (starts with VYBE3:)" aria-label="Reply code from your friend" spellcheck="false"></textarea>
             <div class="row">
               <button class="btn btn-ghost btn-sm" id="btnPasteAnswer" type="button">Paste</button>
               <button class="btn btn-ghost btn-sm" id="btnScanAnswer" type="button" hidden>Scan QR</button>
@@ -250,7 +252,7 @@
         </div>
 
         <div class="notice notice-info">
-          <strong>Good to know:</strong> there is no server to pass your invite and reply along, so you carry them yourselves (scan or send). VYBE uses a public STUN server to find your public address, but there is no TURN relay. On very restrictive networks (some campus Wi-Fi, corporate firewalls, some mobile carriers) the direct connection can fail. Try the same Wi-Fi, or a phone hotspot. Use two different devices, or one normal and one private window; two tabs of the same browser share storage and are blocked.
+          <strong>Good to know:</strong> there is no server to pass your invite and reply along, so you carry them yourselves (scan or send). Each invite and reply works <strong>once</strong>; to try again, create a new invite. <span id="networkNotice"></span>Use two different devices, or one normal and one private window; two tabs of the same browser share storage and are blocked.
         </div>
       </div>
     </section>
@@ -303,7 +305,7 @@
               <dt>You</dt><dd id="infoYou">-</dd>
               <dt>Peer</dt><dd id="infoPeer">-</dd>
               <dt>Route</dt><dd id="infoPath">-</dd>
-              <dt>ICE state</dt><dd id="infoIce">-</dd>
+              <dt title="The browser's check that a route to your friend exists">Network check</dt><dd id="infoIce">-</dd>
               <dt>Saved here</dt><dd id="infoStored">0 messages</dd>
               <dt>History sync</dt><dd id="infoSync">-</dd>
               <dt>Duplicates blocked</dt><dd id="infoDup">0</dd>
@@ -335,11 +337,11 @@
         <p>WebRTC is built into modern browsers. It lets two browsers set up a direct connection, and its <strong>RTCDataChannel</strong> sends text or data between them. We need no plug-in and no backend for the messages themselves.</p>
 
         <h2>How does it work without a message server?</h2>
-        <p>Two browsers must first learn how to reach each other. Normally a <em>signalling server</em> passes that information along. VYBE replaces it with you: you share an <strong>invite</strong> (link or QR) and they send back a <strong>reply</strong> code. After that, the channel opens and messages never touch a server. A public <strong>STUN</strong> server is used only to discover each device's public address.</p>
+        <p>Two browsers must first learn how to reach each other. Normally a <em>signalling server</em> passes that information along. VYBE replaces it with you: you share an <strong>invite</strong> (link or QR) and they send back a <strong>reply</strong> code. After that, the channel opens and messages never touch a server. A public <strong>STUN</strong> helper is used only to discover each device's public address. If a relay (<strong>TURN</strong>) server is set up, it is used only when a direct connection is impossible.</p>
 
         <h2>What it cannot do</h2>
         <ul>
-          <li>It does not work on every network. Strict firewalls need a TURN relay, which VYBE does not use.</li>
+          <li>It does not work on every network. Strict firewalls need a relay (TURN) server, which only works if the developer has added one. See the README.</li>
           <li>Only people who are online at the same time can chat. If your peer is offline, nobody can send you their history.</li>
           <li>Your chat lives in your browser storage. Clearing site data deletes it.</li>
           <li>Names are not verified. Anyone can type any name.</li>
@@ -369,6 +371,7 @@
 
   <div id="toasts" class="toasts" aria-live="polite"></div>
 
+  <script src="js/ice-config.js"></script>
   <script src="js/webrtc.js"></script>
   <script src="js/chat.js"></script>
   <script src="js/qrcode.js"></script>
