@@ -119,18 +119,25 @@ Run in headless Chromium on one computer, using two separate browser profiles. T
 
 What the end-to-end test covers: GitHub Pages path and assets; invite and reply generation; QR codes decode back to the exact text; duplicate paste/click on both sides; "Connected" only after the channel opens; chat both ways; HTML shown as text; invalid, oversized and spoofed packets rejected; refresh keeps history; reconnect with a new pair and history sync; a stale reply ends in a clear *Failed* state; invites made locally use the public URL; layouts at 320, 360, 390, 768 and 1366 px.
 
+### Tested on real devices
+
+| Test | Result |
+|---|---|
+| Laptop on Wi-Fi + phone on **mobile data** (two different networks), live GitHub Pages URL | **Connected** on 26 Nov 2026. Chat worked in both directions. Route shown in the app: "Direct over the internet" (no TURN relay was used). |
+
+This is **one** successful test on one pair of networks. It does not prove every network works.
+
 ### Not tested (do these yourself before claiming them)
 
 | Test | Result |
 |---|---|
-| Two real devices on **different networks** (e.g. Wi-Fi + mobile data) on the live URL | ☐ not tested |
 | Real phone camera scanning the invite QR (Android, iPhone) | ☐ not tested (decoded by software only) |
 | In-app *Scan QR* button, *Share…* button, Copy/Paste buttons on a phone | ☐ not tested |
 | Safari and Firefox (only Chromium was used) | ☐ not tested |
 | A real TURN provider (the relay test used a local test server) | ☐ not tested; no credentials are included |
 | Campus Wi-Fi, phone sleep / Wi-Fi drop on a real device | ☐ not tested |
 
-**Remote connection is not guaranteed.** It has not been shown to work across different networks.
+**Remote connection is not guaranteed.** It connected once between a laptop on Wi-Fi and a phone on mobile data (see above). Other networks (campus Wi-Fi, other mobile carriers) have not been tested and may need a TURN relay.
 
 ## Limitations
 
@@ -182,6 +189,5 @@ VYBE/
 ├── assets/logo.svg
 ├── tests/            chat.test.js, e2e-two-peers.js, e2e-turn-relay.js
 ├── screenshots/
-├── VIVA_GUIDE.md
 └── README.md
 ```
